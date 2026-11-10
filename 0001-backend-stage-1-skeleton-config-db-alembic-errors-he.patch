@@ -1,0 +1,1024 @@
+From bf7f39741d65bab348b6762c75b885e2f6003472 Mon Sep 17 00:00:00 2001
+From: backend <backend@local>
+Date: Tue, 10 Nov 2026 18:53:57 +0000
+Subject: [PATCH] backend: stage 1 skeleton (config, db, alembic, errors,
+ health, User model)
+
+---
+ backend/.env.example                      | 16 ++++
+ backend/.gitignore                        |  7 ++
+ backend/Dockerfile                        | 10 +++
+ backend/README.md                         | 42 ++++++++++
+ backend/alembic.ini                       | 29 +++++++
+ backend/app/__init__.py                   |  0
+ backend/app/api/__init__.py               |  0
+ backend/app/api/health.py                 | 32 ++++++++
+ backend/app/core/__init__.py              |  0
+ backend/app/core/config.py                | 47 ++++++++++++
+ backend/app/core/errors.py                | 93 +++++++++++++++++++++++
+ backend/app/core/logging.py               | 29 +++++++
+ backend/app/db/__init__.py                |  0
+ backend/app/db/base.py                    | 15 ++++
+ backend/app/db/session.py                 | 35 +++++++++
+ backend/app/main.py                       | 42 ++++++++++
+ backend/app/models/__init__.py            |  3 +
+ backend/app/models/user.py                | 36 +++++++++
+ backend/docker-compose.yml                | 26 +++++++
+ backend/migrations/env.py                 | 41 ++++++++++
+ backend/migrations/script.py.mako         | 22 ++++++
+ backend/migrations/versions/0001_users.py | 39 ++++++++++
+ backend/pyproject.toml                    | 34 +++++++++
+ backend/tests/__init__.py                 |  0
+ backend/tests/conftest.py                 | 46 +++++++++++
+ backend/tests/test_config_logging.py      | 34 +++++++++
+ backend/tests/test_errors.py              | 80 +++++++++++++++++++
+ backend/tests/test_health.py              | 15 ++++
+ backend/tests/test_user_model.py          | 22 ++++++
+ 29 files changed, 795 insertions(+)
+ create mode 100644 backend/.env.example
+ create mode 100644 backend/.gitignore
+ create mode 100644 backend/Dockerfile
+ create mode 100644 backend/README.md
+ create mode 100644 backend/alembic.ini
+ create mode 100644 backend/app/__init__.py
+ create mode 100644 backend/app/api/__init__.py
+ create mode 100644 backend/app/api/health.py
+ create mode 100644 backend/app/core/__init__.py
+ create mode 100644 backend/app/core/config.py
+ create mode 100644 backend/app/core/errors.py
+ create mode 100644 backend/app/core/logging.py
+ create mode 100644 backend/app/db/__init__.py
+ create mode 100644 backend/app/db/base.py
+ create mode 100644 backend/app/db/session.py
+ create mode 100644 backend/app/main.py
+ create mode 100644 backend/app/models/__init__.py
+ create mode 100644 backend/app/models/user.py
+ create mode 100644 backend/docker-compose.yml
+ create mode 100644 backend/migrations/env.py
+ create mode 100644 backend/migrations/script.py.mako
+ create mode 100644 backend/migrations/versions/0001_users.py
+ create mode 100644 backend/pyproject.toml
+ create mode 100644 backend/tests/__init__.py
+ create mode 100644 backend/tests/conftest.py
+ create mode 100644 backend/tests/test_config_logging.py
+ create mode 100644 backend/tests/test_errors.py
+ create mode 100644 backend/tests/test_health.py
+ create mode 100644 backend/tests/test_user_model.py
+
+diff --git a/backend/.env.example b/backend/.env.example
+new file mode 100644
+index 0000000..0b5ba96
+--- /dev/null
++++ b/backend/.env.example
+@@ -0,0 +1,16 @@
++# Окружение: development | test | production
++APP_ENV=development
++LOG_LEVEL=INFO
++
++# PostgreSQL (asyncpg)
++DATABASE_URL=postgresql+asyncpg://nftscanner:nftscanner@localhost:5432/nftscanner
++
++# Секреты. В production обязательно заменить, значения по умолчанию там не принимаются.
++JWT_SECRET=change-me
++TELEGRAM_BOT_TOKEN=
++
++# CORS: адреса фронтенда через запятую
++CORS_ORIGINS=http://localhost:3000
++
++# Режим источника данных сканера: demo | real
++SCANNER_MODE=demo
+diff --git a/backend/.gitignore b/backend/.gitignore
+new file mode 100644
+index 0000000..eb5d778
+--- /dev/null
++++ b/backend/.gitignore
+@@ -0,0 +1,7 @@
++.env
++.venv/
++__pycache__/
++*.pyc
++.pytest_cache/
++.ruff_cache/
++*.db
+diff --git a/backend/Dockerfile b/backend/Dockerfile
+new file mode 100644
+index 0000000..4af26a7
+--- /dev/null
++++ b/backend/Dockerfile
+@@ -0,0 +1,10 @@
++FROM python:3.13-slim
++ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
++WORKDIR /srv
++COPY pyproject.toml ./
++RUN pip install --no-cache-dir .
++COPY . .
++RUN useradd -m app && chown -R app /srv
++USER app
++EXPOSE 8000
++CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+diff --git a/backend/README.md b/backend/README.md
+new file mode 100644
+index 0000000..0fe9f25
+--- /dev/null
++++ b/backend/README.md
+@@ -0,0 +1,42 @@
++# NFT Gift Scanner: Backend
++
++FastAPI + SQLAlchemy 2 + PostgreSQL. Единый backend для веб-приложения, админ-панели и Telegram-бота.
++
++## Запуск
++
++```bash
++cp .env.example .env        # заполнить JWT_SECRET и TELEGRAM_BOT_TOKEN
++docker compose up --build   # PostgreSQL + миграции + API на :8000
++```
++
++Swagger: http://localhost:8000/docs
++
++## Локальная разработка
++
++```bash
++python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
++pip install -e ".[dev]"
++alembic upgrade head
++uvicorn app.main:app --reload
++pytest
++```
++
++Тесты используют SQLite in-memory и не требуют PostgreSQL.
++
++## Принципы
++
++- Секреты только из переменных окружения; в production значения по умолчанию не принимаются.
++- Единый формат ошибок: `{"error": {"code", "message", "details"}}`.
++- Токены и initData маскируются в логах.
++- Источник данных сканера: `SCANNER_MODE=demo|real`. Демо-данные всегда помечаются.
++
++## Статус этапов
++
++- [x] 1. Каркас: конфиг, БД, Alembic, ошибки, логирование, health, модель User
++- [ ] 2. Авторизация Telegram initData, `/api/users/me`, роли
++- [ ] 3. Каталог подарков и заявки
++- [ ] 4. Предложения и Scanner
++- [ ] 5. Matching и уведомления
++- [ ] 6. Статистика и события
++- [ ] 7. Admin API
++- [ ] 8. Документация и API-контракт для фронтенда
+diff --git a/backend/alembic.ini b/backend/alembic.ini
+new file mode 100644
+index 0000000..7da231d
+--- /dev/null
++++ b/backend/alembic.ini
+@@ -0,0 +1,29 @@
++[alembic]
++script_location = migrations
++prepend_sys_path = .
++
++[loggers]
++keys = root,sqlalchemy,alembic
++[handlers]
++keys = console
++[formatters]
++keys = generic
++[logger_root]
++level = WARN
++handlers = console
++qualname =
++[logger_sqlalchemy]
++level = WARN
++handlers =
++qualname = sqlalchemy.engine
++[logger_alembic]
++level = INFO
++handlers =
++qualname = alembic
++[handler_console]
++class = StreamHandler
++args = (sys.stderr,)
++level = NOTSET
++formatter = generic
++[formatter_generic]
++format = %(levelname)-5.5s [%(name)s] %(message)s
+diff --git a/backend/app/__init__.py b/backend/app/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/api/__init__.py b/backend/app/api/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/api/health.py b/backend/app/api/health.py
+new file mode 100644
+index 0000000..da60f83
+--- /dev/null
++++ b/backend/app/api/health.py
+@@ -0,0 +1,32 @@
++from fastapi import APIRouter, Depends
++from pydantic import BaseModel
++from sqlalchemy import text
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from app.core.errors import AppError
++from app.db.session import get_session
++
++router = APIRouter(tags=["health"])
++
++
++class HealthResponse(BaseModel):
++    status: str
++
++
++class ServiceUnavailable(AppError):
++    status_code = 503
++    code = "service_unavailable"
++
++
++@router.get("/health", response_model=HealthResponse, summary="Liveness")
++async def health() -> HealthResponse:
++    return HealthResponse(status="ok")
++
++
++@router.get("/health/db", response_model=HealthResponse, summary="Readiness (БД)")
++async def health_db(session: AsyncSession = Depends(get_session)) -> HealthResponse:
++    try:
++        await session.execute(text("SELECT 1"))
++    except Exception as exc:  # noqa: BLE001
++        raise ServiceUnavailable("Database is unavailable") from exc
++    return HealthResponse(status="ok")
+diff --git a/backend/app/core/__init__.py b/backend/app/core/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/core/config.py b/backend/app/core/config.py
+new file mode 100644
+index 0000000..b7c9bab
+--- /dev/null
++++ b/backend/app/core/config.py
+@@ -0,0 +1,47 @@
++from functools import lru_cache
++from typing import Literal
++
++from pydantic import SecretStr, field_validator, model_validator
++from pydantic_settings import BaseSettings, SettingsConfigDict
++
++_DEFAULT_JWT_SECRET = "change-me"
++
++
++class Settings(BaseSettings):
++    """Конфигурация из переменных окружения. Секретов в коде нет."""
++
++    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
++
++    app_env: Literal["development", "test", "production"] = "development"
++    log_level: str = "INFO"
++
++    database_url: str = "postgresql+asyncpg://nftscanner:nftscanner@localhost:5432/nftscanner"
++
++    jwt_secret: SecretStr = SecretStr(_DEFAULT_JWT_SECRET)
++    telegram_bot_token: SecretStr = SecretStr("")
++
++    cors_origins: list[str] = ["http://localhost:3000"]
++
++    scanner_mode: Literal["demo", "real"] = "demo"
++
++    @field_validator("cors_origins", mode="before")
++    @classmethod
++    def _split_origins(cls, value: object) -> object:
++        # Разрешаем формат "a,b" в .env вместо JSON-списка.
++        if isinstance(value, str) and not value.strip().startswith("["):
++            return [item.strip() for item in value.split(",") if item.strip()]
++        return value
++
++    @model_validator(mode="after")
++    def _check_production(self) -> "Settings":
++        if self.app_env == "production":
++            if self.jwt_secret.get_secret_value() == _DEFAULT_JWT_SECRET:
++                raise ValueError("JWT_SECRET must be set in production")
++            if "*" in self.cors_origins:
++                raise ValueError("Wildcard CORS is not allowed in production")
++        return self
++
++
++@lru_cache
++def get_settings() -> Settings:
++    return Settings()
+diff --git a/backend/app/core/errors.py b/backend/app/core/errors.py
+new file mode 100644
+index 0000000..c00fa82
+--- /dev/null
++++ b/backend/app/core/errors.py
+@@ -0,0 +1,93 @@
++"""Единый формат ошибок: {"error": {"code", "message", "details"}}."""
++
++import logging
++from typing import Any
++
++from fastapi import FastAPI, Request
++from fastapi.exceptions import RequestValidationError
++from fastapi.responses import JSONResponse
++from pydantic import BaseModel
++from starlette.exceptions import HTTPException as StarletteHTTPException
++
++logger = logging.getLogger(__name__)
++
++
++class ErrorBody(BaseModel):
++    code: str
++    message: str
++    details: Any | None = None
++
++
++class ErrorResponse(BaseModel):
++    error: ErrorBody
++
++
++class AppError(Exception):
++    status_code = 400
++    code = "bad_request"
++
++    def __init__(self, message: str, *, details: Any | None = None) -> None:
++        super().__init__(message)
++        self.message = message
++        self.details = details
++
++
++class NotFoundError(AppError):
++    status_code = 404
++    code = "not_found"
++
++
++class UnauthorizedError(AppError):
++    status_code = 401
++    code = "unauthorized"
++
++
++class ForbiddenError(AppError):
++    status_code = 403
++    code = "forbidden"
++
++
++class ConflictError(AppError):
++    status_code = 409
++    code = "conflict"
++
++
++_HTTP_CODES = {
++    400: "bad_request",
++    401: "unauthorized",
++    403: "forbidden",
++    404: "not_found",
++    405: "method_not_allowed",
++    409: "conflict",
++    429: "too_many_requests",
++}
++
++
++def _response(status: int, code: str, message: str, details: Any | None = None) -> JSONResponse:
++    body = ErrorResponse(error=ErrorBody(code=code, message=message, details=details))
++    return JSONResponse(status_code=status, content=body.model_dump(mode="json"))
++
++
++def register_error_handlers(app: FastAPI) -> None:
++    @app.exception_handler(AppError)
++    async def _app_error(_: Request, exc: AppError) -> JSONResponse:
++        return _response(exc.status_code, exc.code, exc.message, exc.details)
++
++    @app.exception_handler(StarletteHTTPException)
++    async def _http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
++        code = _HTTP_CODES.get(exc.status_code, "http_error")
++        return _response(exc.status_code, code, str(exc.detail))
++
++    @app.exception_handler(RequestValidationError)
++    async def _validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
++        details = [
++            {"field": ".".join(str(p) for p in err["loc"][1:]), "message": err["msg"]}
++            for err in exc.errors()
++        ]
++        return _response(422, "validation_error", "Request validation failed", details)
++
++    @app.exception_handler(Exception)
++    async def _unhandled(_: Request, exc: Exception) -> JSONResponse:
++        # Детали наружу не отдаём, в лог пишем трассировку.
++        logger.exception("Unhandled error", exc_info=exc)
++        return _response(500, "internal_error", "Internal server error")
+diff --git a/backend/app/core/logging.py b/backend/app/core/logging.py
+new file mode 100644
+index 0000000..af8a3dc
+--- /dev/null
++++ b/backend/app/core/logging.py
+@@ -0,0 +1,29 @@
++import logging
++import re
++
++# Маскируем то, что не должно попадать в логи: токены бота и initData.
++_SECRET_PATTERNS = [
++    (re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{30,}\b"), "[bot-token]"),
++    (re.compile(r"(init_?data=)[^\s&]+", re.IGNORECASE), r"\1[redacted]"),
++    (re.compile(r"(authorization:\s*bearer\s+)\S+", re.IGNORECASE), r"\1[redacted]"),
++]
++
++
++class RedactingFilter(logging.Filter):
++    def filter(self, record: logging.LogRecord) -> bool:
++        message = record.getMessage()
++        for pattern, replacement in _SECRET_PATTERNS:
++            message = pattern.sub(replacement, message)
++        record.msg, record.args = message, None
++        return True
++
++
++def setup_logging(level: str = "INFO") -> None:
++    handler = logging.StreamHandler()
++    handler.setFormatter(
++        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
++    )
++    handler.addFilter(RedactingFilter())
++    root = logging.getLogger()
++    root.handlers = [handler]
++    root.setLevel(level.upper())
+diff --git a/backend/app/db/__init__.py b/backend/app/db/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/app/db/base.py b/backend/app/db/base.py
+new file mode 100644
+index 0000000..b194078
+--- /dev/null
++++ b/backend/app/db/base.py
+@@ -0,0 +1,15 @@
++from datetime import UTC, datetime
++
++from sqlalchemy import BigInteger, DateTime, Integer
++from sqlalchemy.orm import DeclarativeBase
++
++# BIGINT в PostgreSQL, INTEGER в SQLite (иначе у SQLite не работает автоинкремент PK в тестах).
++BigIntPK = BigInteger().with_variant(Integer, "sqlite")
++
++
++def utcnow() -> datetime:
++    return datetime.now(UTC)
++
++
++class Base(DeclarativeBase):
++    type_annotation_map = {datetime: DateTime(timezone=True)}
+diff --git a/backend/app/db/session.py b/backend/app/db/session.py
+new file mode 100644
+index 0000000..dd5f4dd
+--- /dev/null
++++ b/backend/app/db/session.py
+@@ -0,0 +1,35 @@
++from collections.abc import AsyncIterator
++
++from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
++
++from app.core.config import get_settings
++
++_engine: AsyncEngine | None = None
++_sessionmaker: async_sessionmaker[AsyncSession] | None = None
++
++
++def get_engine() -> AsyncEngine:
++    global _engine, _sessionmaker
++    if _engine is None:
++        _engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
++        _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
++    return _engine
++
++
++def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
++    get_engine()
++    assert _sessionmaker is not None
++    return _sessionmaker
++
++
++async def get_session() -> AsyncIterator[AsyncSession]:
++    async with get_sessionmaker()() as session:
++        yield session
++
++
++async def dispose_engine() -> None:
++    global _engine, _sessionmaker
++    if _engine is not None:
++        await _engine.dispose()
++    _engine = None
++    _sessionmaker = None
+diff --git a/backend/app/main.py b/backend/app/main.py
+new file mode 100644
+index 0000000..6b37f9a
+--- /dev/null
++++ b/backend/app/main.py
+@@ -0,0 +1,42 @@
++from collections.abc import AsyncIterator
++from contextlib import asynccontextmanager
++
++from fastapi import FastAPI
++from fastapi.middleware.cors import CORSMiddleware
++
++from app.api import health
++from app.core.config import get_settings
++from app.core.errors import register_error_handlers
++from app.core.logging import setup_logging
++from app.db.session import dispose_engine
++
++
++@asynccontextmanager
++async def lifespan(_: FastAPI) -> AsyncIterator[None]:
++    yield
++    await dispose_engine()
++
++
++def create_app() -> FastAPI:
++    settings = get_settings()
++    setup_logging(settings.log_level)
++
++    app = FastAPI(
++        title="NFT Gift Scanner API",
++        version="0.1.0",
++        description="Backend API для веб-приложения, админ-панели и Telegram-бота.",
++        lifespan=lifespan,
++    )
++    app.add_middleware(
++        CORSMiddleware,
++        allow_origins=settings.cors_origins,
++        allow_credentials=True,
++        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
++        allow_headers=["Authorization", "Content-Type"],
++    )
++    register_error_handlers(app)
++    app.include_router(health.router, prefix="/api")
++    return app
++
++
++app = create_app()
+diff --git a/backend/app/models/__init__.py b/backend/app/models/__init__.py
+new file mode 100644
+index 0000000..6052bb1
+--- /dev/null
++++ b/backend/app/models/__init__.py
+@@ -0,0 +1,3 @@
++from app.models.user import User, UserRole
++
++__all__ = ["User", "UserRole"]
+diff --git a/backend/app/models/user.py b/backend/app/models/user.py
+new file mode 100644
+index 0000000..0c2d80a
+--- /dev/null
++++ b/backend/app/models/user.py
+@@ -0,0 +1,36 @@
++import enum
++from datetime import datetime
++
++from sqlalchemy import BigInteger, Boolean, Enum, String
++from sqlalchemy.orm import Mapped, mapped_column
++
++from app.db.base import Base, BigIntPK, utcnow
++
++
++class UserRole(str, enum.Enum):
++    USER = "user"
++    ADMIN = "admin"
++    SUPERADMIN = "superadmin"
++
++
++class User(Base):
++    __tablename__ = "users"
++
++    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
++    # Telegram ID берётся только из проверенной подписи initData (этап 2).
++    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
++    username: Mapped[str | None] = mapped_column(String(64))
++    first_name: Mapped[str | None] = mapped_column(String(128))
++    last_name: Mapped[str | None] = mapped_column(String(128))
++    language_code: Mapped[str | None] = mapped_column(String(16))
++
++    role: Mapped[UserRole] = mapped_column(
++        Enum(UserRole, native_enum=False, length=16, values_callable=lambda e: [m.value for m in e]),
++        default=UserRole.USER,
++    )
++    is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
++    notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
++
++    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
++    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
++    last_seen_at: Mapped[datetime | None] = mapped_column()
+diff --git a/backend/docker-compose.yml b/backend/docker-compose.yml
+new file mode 100644
+index 0000000..be336d8
+--- /dev/null
++++ b/backend/docker-compose.yml
+@@ -0,0 +1,26 @@
++services:
++  db:
++    image: postgres:16
++    environment:
++      POSTGRES_USER: nftscanner
++      POSTGRES_PASSWORD: nftscanner
++      POSTGRES_DB: nftscanner
++    ports: ["5432:5432"]
++    volumes: ["pgdata:/var/lib/postgresql/data"]
++    healthcheck:
++      test: ["CMD-SHELL", "pg_isready -U nftscanner"]
++      interval: 5s
++      retries: 10
++
++  api:
++    build: .
++    env_file: .env
++    environment:
++      DATABASE_URL: postgresql+asyncpg://nftscanner:nftscanner@db:5432/nftscanner
++    depends_on:
++      db: { condition: service_healthy }
++    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
++    ports: ["8000:8000"]
++
++volumes:
++  pgdata:
+diff --git a/backend/migrations/env.py b/backend/migrations/env.py
+new file mode 100644
+index 0000000..278de4e
+--- /dev/null
++++ b/backend/migrations/env.py
+@@ -0,0 +1,41 @@
++import asyncio
++
++from alembic import context
++from sqlalchemy.ext.asyncio import create_async_engine
++
++import app.models  # noqa: F401  (регистрирует модели в metadata)
++from app.core.config import get_settings
++from app.db.base import Base
++
++config = context.config
++target_metadata = Base.metadata
++
++
++def _url() -> str:
++    # URL берётся из конфигурации приложения (env), не из alembic.ini.
++    return config.get_main_option("sqlalchemy.url") or get_settings().database_url
++
++
++def run_migrations_offline() -> None:
++    context.configure(url=_url(), target_metadata=target_metadata, literal_binds=True)
++    with context.begin_transaction():
++        context.run_migrations()
++
++
++def _run(connection) -> None:  # type: ignore[no-untyped-def]
++    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
++    with context.begin_transaction():
++        context.run_migrations()
++
++
++async def run_migrations_online() -> None:
++    engine = create_async_engine(_url())
++    async with engine.connect() as connection:
++        await connection.run_sync(_run)
++    await engine.dispose()
++
++
++if context.is_offline_mode():
++    run_migrations_offline()
++else:
++    asyncio.run(run_migrations_online())
+diff --git a/backend/migrations/script.py.mako b/backend/migrations/script.py.mako
+new file mode 100644
+index 0000000..36cd8ef
+--- /dev/null
++++ b/backend/migrations/script.py.mako
+@@ -0,0 +1,22 @@
++"""${message}
++
++Revision ID: ${up_revision}
++Revises: ${down_revision | comma,n}
++Create Date: ${create_date}
++"""
++from alembic import op
++import sqlalchemy as sa
++${imports if imports else ""}
++
++revision = ${repr(up_revision)}
++down_revision = ${repr(down_revision)}
++branch_labels = ${repr(branch_labels)}
++depends_on = ${repr(depends_on)}
++
++
++def upgrade() -> None:
++    ${upgrades if upgrades else "pass"}
++
++
++def downgrade() -> None:
++    ${downgrades if downgrades else "pass"}
+diff --git a/backend/migrations/versions/0001_users.py b/backend/migrations/versions/0001_users.py
+new file mode 100644
+index 0000000..7ae10f1
+--- /dev/null
++++ b/backend/migrations/versions/0001_users.py
+@@ -0,0 +1,39 @@
++"""users
++
++Revision ID: 0001
++Revises:
++Create Date: 2026-11-10
++"""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0001"
++down_revision = None
++branch_labels = None
++depends_on = None
++
++
++def upgrade() -> None:
++    op.create_table(
++        "users",
++        sa.Column("id", sa.BigInteger().with_variant(sa.Integer(), "sqlite"), primary_key=True, autoincrement=True),
++        sa.Column("telegram_id", sa.BigInteger(), nullable=False),
++        sa.Column("username", sa.String(64)),
++        sa.Column("first_name", sa.String(128)),
++        sa.Column("last_name", sa.String(128)),
++        sa.Column("language_code", sa.String(16)),
++        sa.Column("role", sa.Enum("user", "admin", "superadmin", name="userrole", native_enum=False, length=16), nullable=False),
++        sa.Column("is_blocked", sa.Boolean(), nullable=False),
++        sa.Column("notifications_enabled", sa.Boolean(), nullable=False),
++        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
++        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
++        sa.Column("last_seen_at", sa.DateTime(timezone=True)),
++    )
++    op.create_index("ix_users_telegram_id", "users", ["telegram_id"], unique=True)
++    op.create_index("ix_users_created_at", "users", ["created_at"])
++
++
++def downgrade() -> None:
++    op.drop_index("ix_users_created_at", table_name="users")
++    op.drop_index("ix_users_telegram_id", table_name="users")
++    op.drop_table("users")
+diff --git a/backend/pyproject.toml b/backend/pyproject.toml
+new file mode 100644
+index 0000000..ee0d2d6
+--- /dev/null
++++ b/backend/pyproject.toml
+@@ -0,0 +1,34 @@
++[project]
++name = "nft-gift-scanner-backend"
++version = "0.1.0"
++description = "Backend для NFT Gift Scanner: REST API, сканер, matching, уведомления, админ-API"
++requires-python = ">=3.13"
++dependencies = [
++    "fastapi>=0.115",
++    "uvicorn[standard]>=0.30",
++    "pydantic>=2.8",
++    "pydantic-settings>=2.4",
++    "sqlalchemy[asyncio]>=2.0.30",
++    "asyncpg>=0.29",
++    "alembic>=1.13",
++    "httpx>=0.27",
++    "apscheduler>=3.10,<4",
++]
++
++[project.optional-dependencies]
++dev = [
++    "pytest>=8",
++    "pytest-asyncio>=0.24",
++    "aiosqlite>=0.20",
++    "ruff>=0.6",
++]
++
++[tool.pytest.ini_options]
++asyncio_mode = "auto"
++asyncio_default_fixture_loop_scope = "function"
++testpaths = ["tests"]
++pythonpath = ["."]
++
++[tool.ruff]
++line-length = 100
++target-version = "py313"
+diff --git a/backend/tests/__init__.py b/backend/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/tests/conftest.py b/backend/tests/conftest.py
+new file mode 100644
+index 0000000..300d1f1
+--- /dev/null
++++ b/backend/tests/conftest.py
+@@ -0,0 +1,46 @@
++import os
++
++# Тесты не должны зависеть от локального .env и реального PostgreSQL.
++os.environ["APP_ENV"] = "test"
++os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
++
++import pytest  # noqa: E402
++from httpx import ASGITransport, AsyncClient  # noqa: E402
++from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
++from sqlalchemy.pool import StaticPool  # noqa: E402
++
++from app.db.base import Base  # noqa: E402
++from app.db.session import get_session  # noqa: E402
++import app.models  # noqa: E402,F401
++from app.main import create_app  # noqa: E402
++
++
++@pytest.fixture
++async def engine():
++    engine = create_async_engine(
++        "sqlite+aiosqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
++    )
++    async with engine.begin() as conn:
++        await conn.run_sync(Base.metadata.create_all)
++    yield engine
++    await engine.dispose()
++
++
++@pytest.fixture
++async def session(engine) -> AsyncSession:
++    async with async_sessionmaker(engine, expire_on_commit=False)() as s:
++        yield s
++
++
++@pytest.fixture
++async def client(engine):
++    app = create_app()
++    maker = async_sessionmaker(engine, expire_on_commit=False)
++
++    async def override():
++        async with maker() as s:
++            yield s
++
++    app.dependency_overrides[get_session] = override
++    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
++        yield c
+diff --git a/backend/tests/test_config_logging.py b/backend/tests/test_config_logging.py
+new file mode 100644
+index 0000000..30b0f35
+--- /dev/null
++++ b/backend/tests/test_config_logging.py
+@@ -0,0 +1,34 @@
++import logging
++
++import pytest
++
++from app.core.config import Settings
++from app.core.logging import RedactingFilter
++
++
++def test_cors_origins_comma_separated():
++    s = Settings(cors_origins="http://a.com, http://b.com")
++    assert s.cors_origins == ["http://a.com", "http://b.com"]
++
++
++def test_production_requires_real_secret():
++    with pytest.raises(ValueError):
++        Settings(app_env="production")
++
++
++def test_production_rejects_wildcard_cors():
++    with pytest.raises(ValueError):
++        Settings(app_env="production", jwt_secret="x" * 32, cors_origins=["*"])
++
++
++def test_production_ok():
++    s = Settings(app_env="production", jwt_secret="x" * 32)
++    assert s.app_env == "production"
++
++
++def test_log_filter_redacts_secrets():
++    f = RedactingFilter()
++    token = "123456789:" + "A" * 35
++    record = logging.LogRecord("t", logging.INFO, "", 0, f"bot {token} init_data=abc123&x=1", None, None)
++    f.filter(record)
++    assert token not in record.msg and "abc123" not in record.msg
+diff --git a/backend/tests/test_errors.py b/backend/tests/test_errors.py
+new file mode 100644
+index 0000000..fdc6689
+--- /dev/null
++++ b/backend/tests/test_errors.py
+@@ -0,0 +1,80 @@
++from fastapi import APIRouter
++from pydantic import BaseModel
++
++from app.core.errors import ConflictError, NotFoundError
++
++
++class Payload(BaseModel):
++    price: int
++
++
++def _install(client):
++    router = APIRouter()
++
++    @router.get("/_t/notfound")
++    async def nf():
++        raise NotFoundError("Lot not found", details={"id": 1})
++
++    @router.get("/_t/conflict")
++    async def cf():
++        raise ConflictError("Already exists")
++
++    @router.get("/_t/boom")
++    async def boom():
++        raise RuntimeError("secret internals")
++
++    @router.post("/_t/validate")
++    async def validate(p: Payload):
++        return p
++
++    client._transport.app.include_router(router)
++
++
++async def test_app_error_format(client):
++    _install(client)
++    r = await client.get("/_t/notfound")
++    assert r.status_code == 404
++    assert r.json() == {
++        "error": {"code": "not_found", "message": "Lot not found", "details": {"id": 1}}
++    }
++
++
++async def test_conflict_code(client):
++    _install(client)
++    r = await client.get("/_t/conflict")
++    assert r.status_code == 409 and r.json()["error"]["code"] == "conflict"
++
++
++async def test_unknown_route_uses_unified_format(client):
++    r = await client.get("/api/nope")
++    assert r.status_code == 404
++    assert r.json()["error"]["code"] == "not_found"
++
++
++async def test_validation_error_format(client):
++    _install(client)
++    r = await client.post("/_t/validate", json={"price": "abc"})
++    assert r.status_code == 422
++    body = r.json()["error"]
++    assert body["code"] == "validation_error"
++    assert body["details"][0]["field"] == "price"
++
++
++async def test_unhandled_error_hides_internals():
++    # Исключение без ASGI-обёртки httpx пробрасывается, поэтому проверяем через raise_app_exceptions=False.
++    from httpx import ASGITransport, AsyncClient
++
++    from app.main import create_app
++
++    app = create_app()
++
++    @app.get("/_t/boom")
++    async def boom():
++        raise RuntimeError("secret internals")
++
++    transport = ASGITransport(app=app, raise_app_exceptions=False)
++    async with AsyncClient(transport=transport, base_url="http://test") as c:
++        r = await c.get("/_t/boom")
++    assert r.status_code == 500
++    assert "secret" not in r.text
++    assert r.json()["error"]["code"] == "internal_error"
+diff --git a/backend/tests/test_health.py b/backend/tests/test_health.py
+new file mode 100644
+index 0000000..3e0e147
+--- /dev/null
++++ b/backend/tests/test_health.py
+@@ -0,0 +1,15 @@
++async def test_health(client):
++    r = await client.get("/api/health")
++    assert r.status_code == 200
++    assert r.json() == {"status": "ok"}
++
++
++async def test_health_db(client):
++    r = await client.get("/api/health/db")
++    assert r.status_code == 200
++
++
++async def test_openapi_available(client):
++    r = await client.get("/openapi.json")
++    assert r.status_code == 200
++    assert "/api/health" in r.json()["paths"]
+diff --git a/backend/tests/test_user_model.py b/backend/tests/test_user_model.py
+new file mode 100644
+index 0000000..e8c4aae
+--- /dev/null
++++ b/backend/tests/test_user_model.py
+@@ -0,0 +1,22 @@
++import pytest
++from sqlalchemy.exc import IntegrityError
++
++from app.models import User, UserRole
++
++
++async def test_user_defaults(session):
++    session.add(User(telegram_id=111))
++    await session.commit()
++    user = (await session.get(User, 1))
++    assert user.role is UserRole.USER
++    assert user.is_blocked is False
++    assert user.notifications_enabled is True
++    assert user.created_at is not None
++
++
++async def test_telegram_id_unique(session):
++    session.add(User(telegram_id=222))
++    await session.commit()
++    session.add(User(telegram_id=222))
++    with pytest.raises(IntegrityError):
++        await session.commit()
+-- 
+2.43.0
+
